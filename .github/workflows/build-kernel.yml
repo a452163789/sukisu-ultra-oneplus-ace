@@ -1,0 +1,227 @@
+name: Build SukiSU Ultra GKI Kernel for OnePlus Ace
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_version:
+        description: 'Kernel version (e.g., 5.10)'
+        required: true
+        default: '5.10'
+        type: string
+      android_version:
+        description: 'Android version (e.g., android13, android14)'
+        required: true
+        default: 'android13'
+        type: choice
+        options:
+          - android13
+          - android14
+      enable_kpm:
+        description: 'Enable KPM support'
+        required: true
+        default: true
+        type: boolean
+      enable_susfs:
+        description: 'Enable SUSFS support'
+        required: true
+        default: true
+        type: boolean
+      custom_name:
+        description: 'Custom kernel name suffix'
+        required: false
+        default: 'SukiSU-Ultra-OnePlus-Ace'
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    
+    steps:
+    - name: Maximize build space
+      uses: easimon/maximize-build-space@master
+      with:
+        root-reserve-mb: 8192
+        swap-size-mb: 1024
+        remove-dotnet: 'true'
+        remove-android: 'true'
+        remove-haskell: 'true'
+        remove-codeql: 'true'
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y bc bison build-essential ccache curl flex \
+          g++-multilib gcc-multilib git gnupg gperf imagemagick \
+          lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool \
+          libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev \
+          libxml2 libxml2-utils lzop pngcrush rsync schedtool \
+          squashfs-tools xsltproc zip zlib1g-dev python3 python-is-python3 \
+          repo git-lfs
+    
+    - name: Setup repo
+      run: |
+        mkdir -p ~/.bin
+        PATH="${HOME}/.bin:${PATH}"
+        curl https://storage.googleapis.com/git-repo-downloads/repo > ~/.bin/repo
+        chmod a+rx ~/.bin/repo
+        echo "$HOME/.bin" >> $GITHUB_PATH
+    
+    - name: Configure Git
+      run: |
+        git config --global user.email "actions@github.com"
+        git config --global user.name "GitHub Actions"
+        git config --global color.ui false
+    
+    - name: Sync kernel source
+      run: |
+        mkdir -p ~/kernel_workspace
+        cd ~/kernel_workspace
+        repo init -u https://android.googlesource.com/kernel/manifest \
+          -b common-${{ inputs.android_version }}-${{ inputs.kernel_version }} --depth=1
+        repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags
+    
+    - name: Download and integrate SukiSU Ultra
+      run: |
+        cd ~/kernel_workspace
+        curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
+        
+    - name: Configure kernel options
+      run: |
+        cd ~/kernel_workspace/common
+        
+        # Enable KernelSU
+        echo "CONFIG_KSU=y" >> arch/arm64/configs/gki_defconfig
+        
+        # Enable KPM if requested
+        if [ "${{ inputs.enable_kpm }}" == "true" ]; then
+          echo "CONFIG_KPM=y" >> arch/arm64/configs/gki_defconfig
+        fi
+        
+        # Enable SUSFS if requested
+        if [ "${{ inputs.enable_susfs }}" == "true" ]; then
+          echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> arch/arm64/configs/gki_defconfig
+        fi
+        
+        # Other optimizations
+        echo "CONFIG_LOCALVERSION=\"-${{ inputs.custom_name }}\"" >> arch/arm64/configs/gki_defconfig
+    
+    - name: Build kernel
+      run: |
+        cd ~/kernel_workspace
+        export LTO=thin
+        BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh -j$(nproc --all)
+    
+    - name: Prepare AnyKernel3
+      run: |
+        cd ~
+        git clone https://github.com/osm0sis/AnyKernel3.git --depth=1
+        cd AnyKernel3
+        
+        # Configure for OnePlus Ace (spacewar)
+        cat > anykernel.sh << 'EOF'
+        # AnyKernel3 Ramdisk Mod Script
+        # osm0sis @ xda-developers
+        
+        ## AnyKernel setup
+        # begin properties
+        properties() { '
+        kernel.string=SukiSU Ultra GKI Kernel for OnePlus Ace (PGKM10)
+        do.devicecheck=1
+        do.modules=0
+        do.systemless=1
+        do.cleanup=1
+        do.cleanuponabort=0
+        device.name1=spacewar
+        device.name2=PGKM10
+        device.name3=OnePlus Ace
+        supported.versions=13-14
+        supported.patchlevels=
+        '; } # end properties
+        
+        # shell variables
+        block=/dev/block/bootdevice/by-name/boot;
+        is_slot_device=1;
+        ramdisk_compression=auto;
+        patch_vbmeta_flag=auto;
+        
+        ## AnyKernel methods (DO NOT CHANGE)
+        # import patching functions/variables - see for reference
+        . tools/ak3-core.sh;
+        
+        ## AnyKernel file attributes
+        # set permissions/ownership for included ramdisk files
+        set_perm_recursive 0 0 755 644 $ramdisk/*;
+        set_perm_recursive 0 0 750 750 $ramdisk/init* $ramdisk/sbin;
+        
+        ## AnyKernel boot install
+        dump_boot;
+        write_boot;
+        ## end boot install
+        EOF
+        
+        # Copy kernel image
+        if [ -f ~/kernel_workspace/out/common/dist/Image ]; then
+          cp ~/kernel_workspace/out/common/dist/Image ./
+        elif [ -f ~/kernel_workspace/out/common/dist/Image.gz ]; then
+          cp ~/kernel_workspace/out/common/dist/Image.gz ./
+        elif [ -f ~/kernel_workspace/out/common/dist/Image.lz4 ]; then
+          cp ~/kernel_workspace/out/common/dist/Image.lz4 ./
+        fi
+        
+        # Copy dtb/dtbo if exists
+        if [ -f ~/kernel_workspace/out/common/dist/dtb.img ]; then
+          cp ~/kernel_workspace/out/common/dist/dtb.img ./
+        fi
+        if [ -f ~/kernel_workspace/out/common/dist/dtbo.img ]; then
+          cp ~/kernel_workspace/out/common/dist/dtbo.img ./
+        fi
+        
+        # Package
+        zip -r9 ../SukiSU-Ultra-OnePlus-Ace-${{ inputs.kernel_version }}.zip * -x .git README.md *placeholder
+    
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: SukiSU-Ultra-OnePlus-Ace-${{ inputs.kernel_version }}
+        path: ~/SukiSU-Ultra-OnePlus-Ace-${{ inputs.kernel_version }}.zip
+        
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      if: github.event_name == 'workflow_dispatch'
+      with:
+        tag_name: ${{ inputs.kernel_version }}-${{ github.run_number }}
+        name: SukiSU Ultra GKI ${{ inputs.kernel_version }} for OnePlus Ace
+        body: |
+          ## SukiSU Ultra GKI ${{ inputs.kernel_version }} Kernel
+          
+          **Device:** OnePlus Ace (PGKM10, spacewar)
+          **Kernel Version:** ${{ inputs.kernel_version }}
+          **Android Version:** ${{ inputs.android_version }}
+          **Build Date:** ${{ github.event.head_commit.timestamp }}
+          
+          ### Features
+          - ✅ SukiSU Ultra (KernelSU fork)
+          - ✅ KPM Support: ${{ inputs.enable_kpm }}
+          - ✅ SUSFS Support: ${{ inputs.enable_susfs }}
+          
+          ### Installation
+          1. Backup your current boot image
+          2. Reboot to recovery (TWRP/OrangeFox)
+          3. Flash this ZIP file
+          4. Reboot
+          5. Install SukiSU Manager APK
+          
+          ### Notes
+          - Requires unlocked bootloader
+          - May break OTA updates
+          - Use at your own risk
+        files: ~/SukiSU-Ultra-OnePlus-Ace-${{ inputs.kernel_version }}.zip
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
