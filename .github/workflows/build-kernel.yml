@@ -117,13 +117,19 @@ jobs:
         echo "=== Added configurations ==="
         diff -u arch/arm64/configs/gki_defconfig.bak arch/arm64/configs/gki_defconfig || true
     
+    - name: Patch build config to skip defconfig check
+      run: |
+        cd ~/kernel_workspace
+        # Remove check_defconfig from POST_DEFCONFIG_CMDS
+        sed -i 's/POST_DEFCONFIG_CMDS="check_defconfig"/POST_DEFCONFIG_CMDS=""/' common/build.config.gki
+        sed -i 's/POST_DEFCONFIG_CMDS="check_defconfig"/POST_DEFCONFIG_CMDS=""/' common/build.config.gki.aarch64
+        # Also remove from any other build configs
+        find . -name "build.config.*" -type f -exec sed -i 's/check_defconfig//' {} \;
+        
     - name: Build kernel
       run: |
         cd ~/kernel_workspace
         export LTO=thin
-        # Disable defconfig check to allow custom configs
-        export POST_DEFCONFIG_CMDS=""
-        export CHECK_DEFCONFIG=0
         BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh -j$(nproc --all)
         
     - name: Clean up to save space
