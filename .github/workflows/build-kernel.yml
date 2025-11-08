@@ -89,31 +89,41 @@ jobs:
       run: |
         cd ~/kernel_workspace/common
         
-        # Enable KernelSU
-        echo "CONFIG_KSU=y" >> arch/arm64/configs/gki_defconfig
+        # Backup original defconfig
+        cp arch/arm64/configs/gki_defconfig arch/arm64/configs/gki_defconfig.bak
         
-        # Enable KPM if requested
-        if [ "${{ inputs.enable_kpm }}" == "true" ]; then
-          echo "CONFIG_KPM=y" >> arch/arm64/configs/gki_defconfig
-        fi
+        # Add custom configurations to defconfig
+        {
+          echo "CONFIG_LOCALVERSION=\"-${{ inputs.custom_name }}\""
+          echo "CONFIG_KSU=y"
+          
+          # Enable KPM if requested
+          if [ "${{ inputs.enable_kpm }}" == "true" ]; then
+            echo "CONFIG_KPM=y"
+          fi
+          
+          # Enable SUSFS if requested  
+          if [ "${{ inputs.enable_susfs }}" == "true" ]; then
+            echo "CONFIG_KSU_SUSFS=y"
+            echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y"
+            echo "CONFIG_KSU_SUSFS_SUS_PATH=y"
+            echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
+            echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y"
+            echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
+          fi
+        } >> arch/arm64/configs/gki_defconfig
         
-        # Enable SUSFS if requested
-        if [ "${{ inputs.enable_susfs }}" == "true" ]; then
-          echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> arch/arm64/configs/gki_defconfig
-        fi
-        
-        # Other optimizations
-        echo "CONFIG_LOCALVERSION=\"-${{ inputs.custom_name }}\"" >> arch/arm64/configs/gki_defconfig
+        # Show what we added
+        echo "=== Added configurations ==="
+        diff -u arch/arm64/configs/gki_defconfig.bak arch/arm64/configs/gki_defconfig || true
     
     - name: Build kernel
       run: |
         cd ~/kernel_workspace
         export LTO=thin
+        # Disable defconfig check to allow custom configs
+        export POST_DEFCONFIG_CMDS=""
+        export CHECK_DEFCONFIG=0
         BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh -j$(nproc --all)
         
     - name: Clean up to save space
